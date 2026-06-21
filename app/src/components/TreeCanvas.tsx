@@ -6,7 +6,10 @@ import type { Theme } from '../theme'
 const NODE_W = 160
 const NODE_H_BASE = 64
 const STATE_ROW_H = 28
-const ARROW_OFFSET = 10
+const ARROW_OFFSET = 16
+const HANDLE_SIZE = 10
+const MIN_W = 100
+const MIN_H = 50
 
 interface Props {
   tree: RecursionTree
@@ -17,11 +20,33 @@ interface Props {
   onMoveNode: (id: string, pos: NodePos) => void
   onAddNode: (parentId: string | null, pos: NodePos) => void
   onDeleteNode: (id: string) => void
+  onUpdateNode: (id: string, patch: Partial<TreeNode>) => void
   connectMode: boolean
   onConnect: (fromId: string, toId: string) => void
 }
 
+interface Draft {
+  label: string
+  state_snapshot: string
+  ret: string
+  step_in: string
+  step_out: string
+}
+
+interface ResizeDrag {
+  id: string
+  startCx: number
+  startCy: number
+  startW: number
+  startH: number
+}
+
+function nodeWidth(node: TreeNode) {
+  return node.pos.w ?? NODE_W
+}
+
 function nodeHeight(node: TreeNode) {
+  if (node.pos.h !== undefined) return node.pos.h
   return node.state_snapshot ? NODE_H_BASE + STATE_ROW_H : NODE_H_BASE
 }
 
@@ -34,14 +59,19 @@ export default function TreeCanvas({
   onMoveNode,
   onAddNode,
   onDeleteNode,
+  onUpdateNode,
   connectMode,
   onConnect,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const labelInputRef = useRef<HTMLInputElement>(null)
   const [drag, setDrag] = useState<{ id: string; ox: number; oy: number } | null>(null)
+  const [resizeDrag, setResizeDrag] = useState<ResizeDrag | null>(null)
   const [connectFrom, setConnectFrom] = useState<string | null>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [panDrag, setPanDrag] = useState<{ startX: number; startY: number; panX: number; panY: number } | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState<Draft>({ label: '', state_snapshot: '', ret: '', step_in: '', step_out: '' })
 
   const getStatus = useCallback(
     (node: TreeNode) => statusOverride?.get(node.id) ?? node.status,
@@ -53,12 +83,34 @@ export default function TreeCanvas({
       const wx = cx - pan.x
       const wy = cy - pan.y
       return [...tree.nodes].reverse().find(n => {
-        const h = nodeHeight(n)
-        return wx >= n.pos.x && wx <= n.pos.x + NODE_W && wy >= n.pos.y && wy <= n.pos.y + h
+        const nw = nodeWidth(n)
+        const nh = nodeHeight(n)
+        return wx >= n.pos.x && wx <= n.pos.x + nw && wy >= n.pos.y && wy <= n.pos.y + nh
       })
     },
     [tree.nodes, pan]
   )
+
+  // Returns true if (cx,cy) canvas coords are over the resize handle of the selected node
+  const onResizeHandle = useCallback(
+    (cx: number, cy: number) => {
+      if (!selectedId) return false
+      const node = tree.nodes.find(n => n.id === selectedId)
+      if (!node) return false
+      const wx = cx - pan.x
+      const wy = cy - pan.y
+      const nw = nodeWidth(node)
+      const nh = nodeHeight(node)
+      const hx = node.pos.x + nw - HANDLE_SIZE
+      const hy = node.pos.y + nh - HANDLE_SIZE
+      return wx >= hx && wx <= node.pos.x + nw + 2 && wy >= hy && wy <= node.pos.y + nh + 2
+    },
+    [selectedId, tree.nodes, pan]
+  )
+
+  useEffect(() => {
+    if (editingId) labelInputRef.current?.focus()
+  }, [editingId])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -78,48 +130,43 @@ export default function TreeCanvas({
       const isCall = edge.kind === 'call'
       const color = isCall ? theme.edge.call : theme.edge.return
 
-      // Determine parent and child regardless of edge direction
       const parentNode = isCall ? fromNode : toNode
       const childNode  = isCall ? toNode  : fromNode
-      const ph = nodeHeight(parentNode)
+      const pnw = nodeWidth(parentNode)
+      const ph  = nodeHeight(parentNode)
 
-      // Axis: parent-bottom-center → child-top-center
-      const axX1 = parentNode.pos.x + NODE_W / 2
+      const axX1 = parentNode.pos.x + pnw / 2
       const axY1 = parentNode.pos.y + ph
-      const axX2 = childNode.pos.x  + NODE_W / 2
+      const axX2 = childNode.pos.x  + nodeWidth(childNode) / 2
       const axY2 = childNode.pos.y
 
-      // Perpendicular unit vector (CCW 90° of travel direction)
       const dxA = axX2 - axX1
       const dyA = axY2 - axY1
       const len = Math.sqrt(dxA * dxA + dyA * dyA) || 1
       const perpX = (-dyA / len) * ARROW_OFFSET
       const perpY = ( dxA / len) * ARROW_OFFSET
 
-      // Call: left of travel (+perp), Return: right of travel (-perp)
-      const sign = isCall ? 1 : -1
       let x1: number, y1: number, x2: number, y2: number
 
       if (isCall) {
-        x1 = axX1 + sign * perpX;  y1 = axY1 + sign * perpY
-        x2 = axX2 + sign * perpX;  y2 = axY2 + sign * perpY
+        // call: parent-bottom → child-top, offset to +perp side
+        x1 = axX1 + perpX;  y1 = axY1 + perpY
+        x2 = axX2 + perpX;  y2 = axY2 + perpY
       } else {
-        // return arrow travels child-top → parent-bottom, opposite side
-        x1 = axX2 - sign * perpX;  y1 = axY2 - sign * perpY
-        x2 = axX1 - sign * perpX;  y2 = axY1 - sign * perpY
+        // return: child-top → parent-bottom, offset to -perp side (opposite)
+        x1 = axX2 - perpX;  y1 = axY2 - perpY
+        x2 = axX1 - perpX;  y2 = axY1 - perpY
       }
 
       rc.line(x1, y1, x2, y2, {
         stroke: color,
         strokeWidth: 1.5,
-        roughness: 1.2,
-        bowing: 0.5,
+        roughness: 0.8,
+        bowing: 0,
       })
 
-      // arrowhead
       drawArrowhead(ctx, x1, y1, x2, y2, color)
 
-      // label on return arrow
       if (!isCall && edge.value) {
         const mx = (x1 + x2) / 2
         const my = (y1 + y2) / 2
@@ -135,67 +182,83 @@ export default function TreeCanvas({
     for (const node of tree.nodes) {
       const status = getStatus(node)
       const colors = theme.node[status] ?? theme.node.called
-      const h = nodeHeight(node)
+      const nw = nodeWidth(node)
+      const nh = nodeHeight(node)
       const isSelected = node.id === selectedId
+      const isEditing = node.id === editingId
 
-      rc.rectangle(node.pos.x, node.pos.y, NODE_W, h, {
+      rc.rectangle(node.pos.x, node.pos.y, nw, nh, {
         fill: colors.fill,
-        stroke: isSelected ? '#f97316' : colors.stroke,
-        strokeWidth: isSelected ? 2 : 1.5,
+        stroke: isEditing ? theme.node.active.stroke : isSelected ? '#f97316' : colors.stroke,
+        strokeWidth: isSelected || isEditing ? 2 : 1.5,
         roughness: 1.4,
         fillStyle: 'solid',
       })
 
-      // zone dividers
       const zone2y = node.pos.y + 38
       if (node.state_snapshot) {
         const zone3y = node.pos.y + 38 + STATE_ROW_H
-        rc.line(node.pos.x, zone2y, node.pos.x + NODE_W, zone2y, {
+        rc.line(node.pos.x, zone2y, node.pos.x + nw, zone2y, {
           stroke: colors.stroke, strokeWidth: 0.8, roughness: 0.5,
         })
-        rc.line(node.pos.x, zone3y, node.pos.x + NODE_W, zone3y, {
+        rc.line(node.pos.x, zone3y, node.pos.x + nw, zone3y, {
           stroke: colors.stroke, strokeWidth: 0.8, roughness: 0.5,
         })
       } else {
-        rc.line(node.pos.x, zone2y, node.pos.x + NODE_W, zone2y, {
+        rc.line(node.pos.x, zone2y, node.pos.x + nw, zone2y, {
           stroke: colors.stroke, strokeWidth: 0.8, roughness: 0.5,
         })
       }
 
+      if (!isEditing) {
+        ctx.save()
+        ctx.font = 'bold 12px monospace'
+        ctx.fillStyle = theme.text
+
+        if (node.step_in !== null) {
+          ctx.font = '10px monospace'
+          ctx.fillStyle = theme.textMuted
+          ctx.fillText(`#${node.step_in}`, node.pos.x + 5, node.pos.y + 14)
+        }
+        ctx.font = 'bold 12px monospace'
+        ctx.fillStyle = theme.text
+        const labelX = node.step_in !== null ? node.pos.x + 28 : node.pos.x + 8
+        const maxChars = Math.max(6, Math.floor(nw / 8) - 2)
+        ctx.fillText(truncate(node.label || '(empty)', maxChars), labelX, node.pos.y + 24)
+
+        if (node.state_snapshot) {
+          ctx.font = '11px monospace'
+          ctx.fillStyle = theme.textMuted
+          ctx.fillText(truncate(node.state_snapshot, Math.max(6, Math.floor(nw / 7) - 1)), node.pos.x + 8, node.pos.y + 38 + 18)
+        }
+
+        if (node.ret !== null) {
+          ctx.font = '11px monospace'
+          ctx.fillStyle = theme.edge.return
+          ctx.fillText(`↑ ${node.ret}`, node.pos.x + 8, node.pos.y + nh - 10)
+        }
+        ctx.restore()
+      }
+    }
+
+    // draw resize handles (on top of all nodes, crisp)
+    for (const node of tree.nodes) {
+      if (node.id !== selectedId) continue
+      const nw = nodeWidth(node)
+      const nh = nodeHeight(node)
+      const hx = node.pos.x + nw - HANDLE_SIZE
+      const hy = node.pos.y + nh - HANDLE_SIZE
       ctx.save()
-      ctx.font = 'bold 12px monospace'
-      ctx.fillStyle = theme.text
-
-      // zone 1: step_in (top-left) + label (top-right area)
-      if (node.step_in !== null) {
-        ctx.font = '10px monospace'
-        ctx.fillStyle = theme.textMuted
-        ctx.fillText(`#${node.step_in}`, node.pos.x + 5, node.pos.y + 14)
-      }
-      ctx.font = 'bold 12px monospace'
-      ctx.fillStyle = theme.text
-      const labelX = node.step_in !== null ? node.pos.x + 28 : node.pos.x + 8
-      ctx.fillText(truncate(node.label || '(empty)', 14), labelX, node.pos.y + 24)
-
-      // zone 2: state snapshot
-      if (node.state_snapshot) {
-        ctx.font = '11px monospace'
-        ctx.fillStyle = theme.textMuted
-        ctx.fillText(truncate(node.state_snapshot, 18), node.pos.x + 8, node.pos.y + 38 + 18)
-      }
-
-      // zone 3 (or 2 if no snapshot): return value
-      const retY = node.state_snapshot ? node.pos.y + h - 10 : node.pos.y + h - 10
-      if (node.ret !== null) {
-        ctx.font = '11px monospace'
-        ctx.fillStyle = theme.edge.return
-        ctx.fillText(`↑ ${node.ret}`, node.pos.x + 8, retY)
-      }
+      ctx.fillStyle = theme.node.active.stroke
+      ctx.strokeStyle = theme.canvas
+      ctx.lineWidth = 1.5
+      ctx.fillRect(hx, hy, HANDLE_SIZE, HANDLE_SIZE)
+      ctx.strokeRect(hx, hy, HANDLE_SIZE, HANDLE_SIZE)
       ctx.restore()
     }
 
     ctx.restore()
-  }, [tree, theme, selectedId, statusOverride, getStatus, pan])
+  }, [tree, theme, selectedId, editingId, statusOverride, getStatus, pan])
 
   function drawArrowhead(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, color: string) {
     const angle = Math.atan2(y2 - y1, x2 - x1)
@@ -217,12 +280,64 @@ export default function TreeCanvas({
     return s.length > max ? s.slice(0, max) + '…' : s
   }
 
+  function openEdit(node: TreeNode) {
+    onSelectNode(node.id)
+    setEditingId(node.id)
+    setDraft({
+      label: node.label,
+      state_snapshot: node.state_snapshot,
+      ret: node.ret ?? '',
+      step_in: node.step_in !== null ? String(node.step_in) : '',
+      step_out: node.step_out !== null ? String(node.step_out) : '',
+    })
+  }
+
+  function commitEdit() {
+    if (!editingId) return
+    onUpdateNode(editingId, {
+      label: draft.label,
+      state_snapshot: draft.state_snapshot,
+      ret: draft.ret || null,
+      step_in: draft.step_in !== '' ? Number(draft.step_in) : null,
+      step_out: draft.step_out !== '' ? Number(draft.step_out) : null,
+    })
+    setEditingId(null)
+  }
+
+  function cancelEdit() {
+    setEditingId(null)
+  }
+
+  function handleOverlayKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') { e.preventDefault(); commitEdit() }
+    if (e.key === 'Escape') { e.preventDefault(); cancelEdit() }
+  }
+
   // --- interaction ---
 
   function handleMouseDown(e: React.MouseEvent) {
+    if (editingId) {
+      commitEdit()
+      return
+    }
+
     const rect = canvasRef.current!.getBoundingClientRect()
     const cx = e.clientX - rect.left
     const cy = e.clientY - rect.top
+
+    // Check resize handle first (only for selected node)
+    if (onResizeHandle(cx, cy)) {
+      const node = tree.nodes.find(n => n.id === selectedId)!
+      setResizeDrag({
+        id: selectedId!,
+        startCx: cx,
+        startCy: cy,
+        startW: nodeWidth(node),
+        startH: nodeHeight(node),
+      })
+      return
+    }
+
     const node = nodeAt(cx, cy)
 
     if (connectMode) {
@@ -255,8 +370,19 @@ export default function TreeCanvas({
     const rect = canvasRef.current!.getBoundingClientRect()
     const cx = e.clientX - rect.left
     const cy = e.clientY - rect.top
+
+    if (resizeDrag) {
+      const node = tree.nodes.find(n => n.id === resizeDrag.id)
+      if (!node) return
+      const newW = Math.max(MIN_W, resizeDrag.startW + (cx - resizeDrag.startCx))
+      const newH = Math.max(MIN_H, resizeDrag.startH + (cy - resizeDrag.startCy))
+      onMoveNode(resizeDrag.id, { ...node.pos, w: newW, h: newH })
+      return
+    }
+
     if (drag) {
-      onMoveNode(drag.id, { x: cx - pan.x - drag.ox, y: cy - pan.y - drag.oy })
+      const existing = tree.nodes.find(n => n.id === drag.id)?.pos ?? {}
+      onMoveNode(drag.id, { ...existing, x: cx - pan.x - drag.ox, y: cy - pan.y - drag.oy })
     } else if (panDrag) {
       setPan({ x: panDrag.panX + cx - panDrag.startX, y: panDrag.panY + cy - panDrag.startY })
     }
@@ -264,6 +390,7 @@ export default function TreeCanvas({
 
   function handleMouseUp() {
     setDrag(null)
+    setResizeDrag(null)
     setPanDrag(null)
   }
 
@@ -273,7 +400,9 @@ export default function TreeCanvas({
     const cx = e.clientX - rect.left
     const cy = e.clientY - rect.top
     const node = nodeAt(cx, cy)
-    if (!node) {
+    if (node) {
+      openEdit(node)
+    } else {
       onAddNode(null, { x: cx - pan.x - NODE_W / 2, y: cy - pan.y - NODE_H_BASE / 2 })
     }
   }
@@ -284,18 +413,109 @@ export default function TreeCanvas({
     }
   }
 
+  const editNode = editingId ? tree.nodes.find(n => n.id === editingId) ?? null : null
+  const editColors = editNode ? (theme.node[getStatus(editNode)] ?? theme.node.called) : null
+
+  const inputBase: React.CSSProperties = {
+    background: 'transparent',
+    border: 'none',
+    outline: 'none',
+    color: theme.text,
+    fontFamily: 'monospace',
+    fontSize: 12,
+    width: '100%',
+    padding: 0,
+  }
+
   return (
-    <canvas
-      ref={canvasRef}
-      width={window.innerWidth - 320}
-      height={window.innerHeight - 80}
-      style={{ background: theme.canvas, cursor: connectMode ? 'crosshair' : 'default', display: 'block' }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onDoubleClick={handleDoubleClick}
-      onKeyDown={handleKeyDown}
-      tabIndex={0}
-    />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <canvas
+        ref={canvasRef}
+        width={window.innerWidth - 320}
+        height={window.innerHeight - 80}
+        style={{
+          background: theme.canvas,
+          cursor: resizeDrag ? 'se-resize' : connectMode ? 'crosshair' : 'default',
+          display: 'block',
+        }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onDoubleClick={handleDoubleClick}
+        onKeyDown={handleKeyDown}
+        tabIndex={0}
+      />
+
+      {editNode && editColors && (
+        <div
+          style={{
+            position: 'absolute',
+            left: editNode.pos.x + pan.x,
+            top: editNode.pos.y + pan.y,
+            width: nodeWidth(editNode),
+            background: editColors.fill,
+            border: `2px solid ${theme.node.active.stroke}`,
+            borderRadius: 3,
+            fontFamily: 'monospace',
+            fontSize: 12,
+            zIndex: 10,
+            boxSizing: 'border-box',
+            pointerEvents: 'auto',
+          }}
+          onKeyDown={handleOverlayKeyDown}
+        >
+          {/* Zone 1: step_in / step_out + label */}
+          <div style={{ display: 'flex', alignItems: 'center', padding: '4px 5px', gap: 3 }}>
+            <input
+              type="number"
+              value={draft.step_in}
+              onChange={e => setDraft(d => ({ ...d, step_in: e.target.value }))}
+              placeholder="#in"
+              style={{ ...inputBase, width: 30, color: theme.textMuted, fontSize: 10 }}
+            />
+            <input
+              type="number"
+              value={draft.step_out}
+              onChange={e => setDraft(d => ({ ...d, step_out: e.target.value }))}
+              placeholder="#out"
+              style={{ ...inputBase, width: 30, color: theme.textMuted, fontSize: 10 }}
+            />
+            <input
+              ref={labelInputRef}
+              value={draft.label}
+              onChange={e => setDraft(d => ({ ...d, label: e.target.value }))}
+              placeholder="fn(args)"
+              style={{ ...inputBase, flex: 1, fontWeight: 'bold' }}
+            />
+          </div>
+
+          {/* Divider */}
+          <div style={{ height: 1, background: editColors.stroke, opacity: 0.4, margin: '0 4px' }} />
+
+          {/* Zone 2: state snapshot */}
+          <div style={{ padding: '4px 5px' }}>
+            <input
+              value={draft.state_snapshot}
+              onChange={e => setDraft(d => ({ ...d, state_snapshot: e.target.value }))}
+              placeholder="state snapshot…"
+              style={{ ...inputBase, color: theme.textMuted }}
+            />
+          </div>
+
+          {/* Divider */}
+          <div style={{ height: 1, background: editColors.stroke, opacity: 0.4, margin: '0 4px' }} />
+
+          {/* Zone 3: return value */}
+          <div style={{ padding: '4px 5px' }}>
+            <input
+              value={draft.ret}
+              onChange={e => setDraft(d => ({ ...d, ret: e.target.value }))}
+              placeholder="↑ return value"
+              style={{ ...inputBase, color: theme.edge.return }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
   )
 }

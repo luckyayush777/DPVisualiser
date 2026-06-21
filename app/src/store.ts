@@ -1,4 +1,4 @@
-import type { RecursionTree, TreeNode, TreeEdge, StepEvent, DPCell, DPHit, NodePos } from './types'
+import type { RecursionTree, TreeNode, TreeEdge, StepEvent, DPCell, DPHit, VisArray, NodePos } from './types'
 
 let _nextId = 0
 export const newId = () => `n${_nextId++}`
@@ -11,7 +11,7 @@ export function emptyTree(): RecursionTree {
     nodes: [],
     edges: [],
     steps: [],
-    dp: { enabled: false, cells: [], hits: [] },
+    dp: { enabled: false, cells: [], hits: [], arrays: [] },
   }
 }
 
@@ -98,6 +98,24 @@ export function removeStep(tree: RecursionTree, seq: number): RecursionTree {
 }
 
 // ---- dp ops ------------------------------------------------------------------
+
+export function addArray(tree: RecursionTree, arr: VisArray): RecursionTree {
+  return { ...tree, dp: { ...tree.dp, arrays: [...(tree.dp.arrays ?? []), arr] } }
+}
+
+export function removeArray(tree: RecursionTree, id: string): RecursionTree {
+  return { ...tree, dp: { ...tree.dp, arrays: (tree.dp.arrays ?? []).filter(a => a.id !== id) } }
+}
+
+export function updateArray(tree: RecursionTree, id: string, patch: Partial<VisArray>): RecursionTree {
+  return {
+    ...tree,
+    dp: {
+      ...tree.dp,
+      arrays: (tree.dp.arrays ?? []).map(a => a.id === id ? { ...a, ...patch } : a),
+    },
+  }
+}
 
 export function addDPCell(tree: RecursionTree, cell: DPCell): RecursionTree {
   return { ...tree, dp: { ...tree.dp, enabled: true, cells: [...tree.dp.cells, cell] } }

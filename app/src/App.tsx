@@ -4,12 +4,14 @@ import NodeEditor from './components/NodeEditor'
 import CallStackPanel from './components/CallStackPanel'
 import StepsPanel from './components/StepsPanel'
 import DPPanel from './components/DPPanel'
-import type { RecursionTree, TreeNode, NodePos, StepEvent, DPCell, DPHit } from './types'
+import ArraysPanel from './components/ArraysPanel'
+import type { RecursionTree, TreeNode, NodePos, StepEvent, DPCell, DPHit, VisArray } from './types'
 import { LIGHT, DARK } from './theme'
 import type { Theme } from './theme'
 import {
   emptyTree, addNode, updateNode, moveNode, deleteNode,
   addStep, removeStep, addDPCell, addDPHit,
+  addArray, removeArray, updateArray,
   computeStatusAtStep, getCallStackAtStep, updateEdge,
 } from './store'
 import { tidyLayout } from './layout'
@@ -19,13 +21,16 @@ export default function App() {
   const [tree, setTree] = useState<RecursionTree>(() => {
     try {
       const saved = localStorage.getItem('recurviz-tree')
-      return saved ? JSON.parse(saved) : emptyTree()
+      if (!saved) return emptyTree()
+      const loaded = JSON.parse(saved) as RecursionTree
+      if (!loaded.dp.arrays) loaded.dp.arrays = []
+      return loaded
     } catch {
       return emptyTree()
     }
   })
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [darkMode, setDarkMode] = useState(false)
+  const [darkMode, setDarkMode] = useState(true)
   const [connectMode, setConnectMode] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
 
@@ -100,6 +105,22 @@ export default function App() {
     if (!selectedId) return
     commit(t => updateNode(t, selectedId, patch))
   }, [selectedId, commit])
+
+  const handleUpdateNodeById = useCallback((id: string, patch: Partial<TreeNode>) => {
+    commit(t => updateNode(t, id, patch))
+  }, [commit])
+
+  const handleAddArray = useCallback((arr: VisArray) => {
+    commit(t => addArray(t, arr))
+  }, [commit])
+
+  const handleRemoveArray = useCallback((id: string) => {
+    commit(t => removeArray(t, id))
+  }, [commit])
+
+  const handleUpdateArray = useCallback((id: string, patch: Partial<VisArray>) => {
+    commit(t => updateArray(t, id, patch))
+  }, [commit])
 
   const handleEdgeValueChange = useCallback((val: string) => {
     if (!selectedId) return
@@ -216,6 +237,7 @@ export default function App() {
             onMoveNode={handleMoveNode}
             onAddNode={handleAddNode}
             onDeleteNode={handleDeleteNode}
+            onUpdateNode={handleUpdateNodeById}
             connectMode={connectMode}
             onConnect={handleConnect}
           />
@@ -254,6 +276,14 @@ export default function App() {
           />
 
           <CallStackPanel tree={tree} callStack={callStack} theme={theme} />
+
+          <ArraysPanel
+            tree={tree}
+            theme={theme}
+            onAddArray={handleAddArray}
+            onRemoveArray={handleRemoveArray}
+            onUpdateArray={handleUpdateArray}
+          />
 
           <DPPanel
             tree={tree}

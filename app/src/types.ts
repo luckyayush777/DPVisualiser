@@ -3,6 +3,8 @@ export type NodeStatus = 'called' | 'active' | 'returning' | 'returned' | 'base'
 export interface NodePos {
   x: number
   y: number
+  w?: number
+  h?: number
 }
 
 export interface TreeNode {
@@ -52,10 +54,17 @@ export interface DPHit {
   seq: number
 }
 
+export interface VisArray {
+  id: string
+  name: string
+  values: string[]
+}
+
 export interface DPData {
   enabled: boolean
   cells: DPCell[]
   hits: DPHit[]
+  arrays: VisArray[]
 }
 
 export interface TreeMeta {

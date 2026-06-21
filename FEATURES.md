@@ -7,7 +7,7 @@ re-asking questions. Ordered by rough priority.
 
 ## F-001 — Inline node editing (double-click to edit)
 
-**Status:** not built  
+**Status:** built  
 **Priority:** high
 
 Double-clicking a node on the canvas opens an inline edit mode directly on the
@@ -87,7 +87,7 @@ label. This is the core value of the feature.
 
 ## F-003 — Node resizing
 
-**Status:** not built  
+**Status:** built  
 **Priority:** medium
 
 Nodes have a fixed size today. This feature lets you resize individual nodes by
