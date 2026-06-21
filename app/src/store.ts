@@ -3,6 +3,14 @@ import type { RecursionTree, TreeNode, TreeEdge, StepEvent, DPCell, DPHit, VisAr
 let _nextId = 0
 export const newId = () => `n${_nextId++}`
 
+// Call after loading a saved tree so new node IDs don't collide with existing ones.
+export function syncNextId(tree: RecursionTree) {
+  for (const n of tree.nodes) {
+    const num = parseInt(n.id.replace(/^n/, ''), 10)
+    if (!isNaN(num) && num >= _nextId) _nextId = num + 1
+  }
+}
+
 export function emptyTree(): RecursionTree {
   _nextId = 0
   return {
@@ -64,9 +72,11 @@ export function deleteNode(tree: RecursionTree, id: string): RecursionTree {
   }
 }
 
-function collectDescendants(tree: RecursionTree, id: string): string[] {
+function collectDescendants(tree: RecursionTree, id: string, visited = new Set<string>()): string[] {
+  if (visited.has(id)) return []
+  visited.add(id)
   const children = tree.nodes.filter(n => n.parent === id).map(n => n.id)
-  return children.flatMap(c => [c, ...collectDescendants(tree, c)])
+  return children.flatMap(c => [c, ...collectDescendants(tree, c, visited)])
 }
 
 // ---- edge ops ----------------------------------------------------------------

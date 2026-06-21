@@ -12,7 +12,7 @@ import {
   emptyTree, addNode, updateNode, moveNode, deleteNode,
   addStep, removeStep, addDPCell, addDPHit,
   addArray, removeArray, updateArray,
-  computeStatusAtStep, getCallStackAtStep, updateEdge,
+  computeStatusAtStep, getCallStackAtStep, updateEdge, syncNextId,
 } from './store'
 import { tidyLayout } from './layout'
 import { saveJSON, loadJSON, exportPNG } from './io'
@@ -24,6 +24,7 @@ export default function App() {
       if (!saved) return emptyTree()
       const loaded = JSON.parse(saved) as RecursionTree
       if (!loaded.dp.arrays) loaded.dp.arrays = []
+      syncNextId(loaded)
       return loaded
     } catch {
       return emptyTree()
@@ -158,7 +159,11 @@ export default function App() {
     const posMap = tidyLayout(tree)
     commit(t => ({
       ...t,
-      nodes: t.nodes.map(n => posMap.has(n.id) ? { ...n, pos: posMap.get(n.id)! } : n),
+      nodes: t.nodes.map(n => {
+        if (!posMap.has(n.id)) return n
+        const { x, y } = posMap.get(n.id)!
+        return { ...n, pos: { ...n.pos, x, y } }
+      }),
     }))
   }, [tree, commit])
 

@@ -69,6 +69,7 @@ export default function TreeCanvas({
   const [resizeDrag, setResizeDrag] = useState<ResizeDrag | null>(null)
   const [connectFrom, setConnectFrom] = useState<string | null>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [scale, setScale] = useState(1)
   const [panDrag, setPanDrag] = useState<{ startX: number; startY: number; panX: number; panY: number } | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Draft>({ label: '', state_snapshot: '', ret: '', step_in: '', step_out: '' })
@@ -80,15 +81,15 @@ export default function TreeCanvas({
 
   const nodeAt = useCallback(
     (cx: number, cy: number) => {
-      const wx = cx - pan.x
-      const wy = cy - pan.y
+      const wx = (cx - pan.x) / scale
+      const wy = (cy - pan.y) / scale
       return [...tree.nodes].reverse().find(n => {
         const nw = nodeWidth(n)
         const nh = nodeHeight(n)
         return wx >= n.pos.x && wx <= n.pos.x + nw && wy >= n.pos.y && wy <= n.pos.y + nh
       })
     },
-    [tree.nodes, pan]
+    [tree.nodes, pan, scale]
   )
 
   // Returns true if (cx,cy) canvas coords are over the resize handle of the selected node
@@ -97,15 +98,15 @@ export default function TreeCanvas({
       if (!selectedId) return false
       const node = tree.nodes.find(n => n.id === selectedId)
       if (!node) return false
-      const wx = cx - pan.x
-      const wy = cy - pan.y
+      const wx = (cx - pan.x) / scale
+      const wy = (cy - pan.y) / scale
       const nw = nodeWidth(node)
       const nh = nodeHeight(node)
       const hx = node.pos.x + nw - HANDLE_SIZE
       const hy = node.pos.y + nh - HANDLE_SIZE
       return wx >= hx && wx <= node.pos.x + nw + 2 && wy >= hy && wy <= node.pos.y + nh + 2
     },
-    [selectedId, tree.nodes, pan]
+    [selectedId, tree.nodes, pan, scale]
   )
 
   useEffect(() => {
@@ -115,11 +116,38 @@ export default function TreeCanvas({
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      if (e.ctrlKey) {
+        // Pinch-to-zoom on macOS trackpad (ctrlKey is set by the OS for pinch)
+        const rect = canvas.getBoundingClientRect()
+        const cx = e.clientX - rect.left
+        const cy = e.clientY - rect.top
+        const factor = e.deltaY < 0 ? 1.08 : 1 / 1.08
+        setScale(prev => {
+          const next = Math.min(5, Math.max(0.1, prev * factor))
+          const actualFactor = next / prev
+          setPan(p => ({ x: cx - (cx - p.x) * actualFactor, y: cy - (cy - p.y) * actualFactor }))
+          return next
+        })
+      } else {
+        // Two-finger scroll → pan
+        setPan(p => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }))
+      }
+    }
+    canvas.addEventListener('wheel', handler, { passive: false })
+    return () => canvas.removeEventListener('wheel', handler)
+  }, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
     const ctx = canvas.getContext('2d')!
     const rc = rough.canvas(canvas)
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     ctx.save()
     ctx.translate(pan.x, pan.y)
+    ctx.scale(scale, scale)
 
     // draw edges
     for (const edge of tree.edges) {
@@ -258,7 +286,7 @@ export default function TreeCanvas({
     }
 
     ctx.restore()
-  }, [tree, theme, selectedId, editingId, statusOverride, getStatus, pan])
+  }, [tree, theme, selectedId, editingId, statusOverride, getStatus, pan, scale])
 
   function drawArrowhead(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, color: string) {
     const angle = Math.atan2(y2 - y1, x2 - x1)
@@ -359,7 +387,7 @@ export default function TreeCanvas({
 
     if (node) {
       onSelectNode(node.id)
-      setDrag({ id: node.id, ox: cx - pan.x - node.pos.x, oy: cy - pan.y - node.pos.y })
+      setDrag({ id: node.id, ox: (cx - pan.x) / scale - node.pos.x, oy: (cy - pan.y) / scale - node.pos.y })
     } else {
       onSelectNode(null)
       setPanDrag({ startX: cx, startY: cy, panX: pan.x, panY: pan.y })
@@ -374,15 +402,15 @@ export default function TreeCanvas({
     if (resizeDrag) {
       const node = tree.nodes.find(n => n.id === resizeDrag.id)
       if (!node) return
-      const newW = Math.max(MIN_W, resizeDrag.startW + (cx - resizeDrag.startCx))
-      const newH = Math.max(MIN_H, resizeDrag.startH + (cy - resizeDrag.startCy))
+      const newW = Math.max(MIN_W, resizeDrag.startW + (cx - resizeDrag.startCx) / scale)
+      const newH = Math.max(MIN_H, resizeDrag.startH + (cy - resizeDrag.startCy) / scale)
       onMoveNode(resizeDrag.id, { ...node.pos, w: newW, h: newH })
       return
     }
 
     if (drag) {
       const existing = tree.nodes.find(n => n.id === drag.id)?.pos ?? {}
-      onMoveNode(drag.id, { ...existing, x: cx - pan.x - drag.ox, y: cy - pan.y - drag.oy })
+      onMoveNode(drag.id, { ...existing, x: (cx - pan.x) / scale - drag.ox, y: (cy - pan.y) / scale - drag.oy })
     } else if (panDrag) {
       setPan({ x: panDrag.panX + cx - panDrag.startX, y: panDrag.panY + cy - panDrag.startY })
     }
@@ -403,7 +431,7 @@ export default function TreeCanvas({
     if (node) {
       openEdit(node)
     } else {
-      onAddNode(null, { x: cx - pan.x - NODE_W / 2, y: cy - pan.y - NODE_H_BASE / 2 })
+      onAddNode(null, { x: (cx - pan.x) / scale - NODE_W / 2, y: (cy - pan.y) / scale - NODE_H_BASE / 2 })
     }
   }
 
@@ -450,9 +478,9 @@ export default function TreeCanvas({
         <div
           style={{
             position: 'absolute',
-            left: editNode.pos.x + pan.x,
-            top: editNode.pos.y + pan.y,
-            width: nodeWidth(editNode),
+            left: editNode.pos.x * scale + pan.x,
+            top: editNode.pos.y * scale + pan.y,
+            width: nodeWidth(editNode) * scale,
             background: editColors.fill,
             border: `2px solid ${theme.node.active.stroke}`,
             borderRadius: 3,

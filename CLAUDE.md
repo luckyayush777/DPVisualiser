@@ -25,7 +25,7 @@ Priorities, in order: **learning clarity > aesthetics (hand-drawn rough.js look)
 
 React 19 + TypeScript + Vite. Canvas rendering via **rough.js** (hand-drawn
 style). Auto-layout via **d3-hierarchy**. No backend — state lives in React +
-localStorage. No test framework is set up.
+localStorage. Tests via **Vitest** (pure store functions only — no DOM/canvas).
 
 ## Run / check
 
@@ -36,10 +36,36 @@ cd app
 npm run dev        # dev server → http://localhost:5173
 npm run build      # tsc -b && vite build
 npx tsc -p tsconfig.app.json --noEmit   # type-check only — RUN THIS after edits
+npm test           # vitest run (fast, ~100 ms)
+npm run test:watch # vitest watch mode
 ```
 
-There are no tests. **After any source change, run the type-check above** — it is
-the only automated safety net.
+**After any source change: run the type-check AND the tests.** The type-check
+catches type errors; the tests catch logic bugs in pure store functions.
+
+## Tests
+
+Tests live at `app/src/store.test.ts` and cover `store.ts` exclusively.
+`store.ts` functions are pure `(tree, …) => tree`, so they run in Node with no
+browser or DOM required — this makes them fast and reliable.
+
+**What is covered (high ROI):**
+- `addNode` — depth, parent, sibling order, call+return edges
+- `deleteNode` — subtree removal, edge/step cleanup, non-existent id no-op,
+  **cycle safety** (parent-reference cycles no longer infinite-loop)
+- `computeStatusAtStep` — full call/return status transitions
+- `getCallStackAtStep` — push/pop correctness
+- `addStep` / `removeStep` — sort order, targeted removal
+- `syncNextId` — prevents ID collisions after loading a saved tree
+
+**What is NOT covered (too DOM/canvas-dependent to unit-test cheaply):**
+- Canvas rendering, drag, resize, zoom, pan — test manually
+- React component wiring (App.tsx, NodeEditor, etc.) — test manually
+
+When you add a new pure function to `store.ts`, add a corresponding test group
+in `store.test.ts`. Keep each test self-contained: call `emptyTree()` to reset
+`_nextId` and get a fresh tree, then build the scenario with the store's own
+functions.
 
 ## Directory map
 
@@ -58,6 +84,7 @@ Dynamic/                  repo root (git repo: DPVisualiser on GitHub)
         ├── App.tsx       ROOT component: state, undo/redo, localStorage, layout, all handlers, sidebar+topbar
         ├── types.ts      ALL TypeScript interfaces. Canonical RecursionTree shape. Zero runtime exports.
         ├── store.ts      ALL pure tree-mutation functions (addNode, updateNode, addArray, stepping engine…)
+        ├── store.test.ts unit tests for store.ts (Vitest, Node-only, no DOM)
         ├── theme.ts      LIGHT + DARK theme objects (colors) + Theme interface
         ├── layout.ts     tidyLayout() — d3-hierarchy auto-layout ("Tidy up" button)
         ├── io.ts         saveJSON / loadJSON / exportPNG
